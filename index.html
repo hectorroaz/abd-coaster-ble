@@ -21,6 +21,8 @@
   .muted{color:var(--muted)} .pill{display:inline-block;padding:.25rem .6rem;border-radius:999px;border:1px solid #2a2a33;color:var(--muted);font-size:.85rem}
   footer{margin:22px 0;color:var(--muted);font-size:.9rem}
   .toggle{display:inline-flex;align-items:center;gap:.5rem}.toggle input{width:18px;height:18px}
+
+  /* Pantalla completa */
   .fullscreen{position:fixed;inset:0;background:#000;display:none;align-items:center;justify-content:center}
   .fullscreen.active{display:flex}
   .fsNum{color:#fff;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;text-align:center;font-size:22vw}
@@ -73,92 +75,119 @@
 </div>
 
 <script>
+/* ======== UUIDs ======== */
 const SERVICE='7b1e0001-8b6b-4b6d-b6b3-6f6b7b1e0001';
 const REPS   ='7b1e0004-8b6b-4b6d-b6b3-6f6b7b1e0001';
-const CTRL   ='7b1e0005-8b6b-4b6d-b6b3-6f6b7b1e0001';
 
+/* ======== UI ======== */
 const $=s=>document.querySelector(s);
 const ui={btnConnect:$('#btnConnect'),btnReset:$('#btnReset'),vibrate:$('#vibrate'),
   status:$('#status'),reps:$('#reps'),timer:$('#timer'),avgCad:$('#avgCad'),
   instCad:$('#instCad'),bestCad:$('#bestCad'),lastInt:$('#lastInt'),notes:$('#notes'),
   fs:$('#fs'),fsNum:$('#fsNum')};
 
-let device,server,svc,chReps,chCtrl;
-let lastRepValue=0,sessionReps=0,sessionStartMs=null,timerId=null,lastRepTs=null,bestCadRPM=0;
+/* ======== Estado sesión (lado cliente) ======== */
+let device,server,svc,chReps;
+let lastRepValue=null;     // último valor bruto que llegó del ESP32
+let baselineReps=null;     // reps del ESP32 cuando empezó la sesión
+let sessionReps=0;
+let sessionStartMs=null;
+let timerId=null;
+let lastRepTs=null;
+let bestCadRPM=0;
+let awaitingFirstValue=false; // para fijar baseline al conectar/refrescar
 
+/* ======== Util ======== */
 function fmtTime(ms){if(ms==null)return'00:00';const s=Math.floor(ms/1000);return`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;}
 function setStatus(t,ok=false){ui.status.textContent=t;ui.status.style.color=ok?'var(--ok)':'var(--muted)';}
-function startTimerIfNeeded(){if(sessionStartMs!==null)return;sessionStartMs=Date.now();timerId=setInterval(()=>{const el=Date.now()-sessionStartMs;ui.timer.textContent=fmtTime(el);const m=el/60000;ui.avgCad.textContent=`${m>0?(sessionReps/m).toFixed(2):'0.00'} rpm`;},1000);}
+function startTimerIfNeeded(){ if(sessionStartMs!==null) return; sessionStartMs=Date.now(); timerId=setInterval(()=>{ const el=Date.now()-sessionStartMs; ui.timer.textContent=fmtTime(el); const m=el/60000; ui.avgCad.textContent=`${m>0?(sessionReps/m).toFixed(2):'0.00'} rpm`; },1000); }
+function clearTimer(){ if(timerId) clearInterval(timerId); timerId=null; sessionStartMs=null; ui.timer.textContent='00:00'; ui.avgCad.textContent='0.00 rpm'; }
 
-async function sendResetToBoard(){
-  if(!chCtrl) return;
-  const data = new Uint8Array([0x01]);
-  try{
-    // intenta con respuesta
-    await chCtrl.writeValue(data);
-  }catch(_){
-    try{ await chCtrl.writeValueWithoutResponse(data); }catch(e){ console.warn('Reset remoto falló:', e.message); }
-  }
-}
-
-function resetSession(){
-  sessionReps=0; lastRepValue=0; lastRepTs=null; bestCadRPM=0;
-  if(timerId) clearInterval(timerId),timerId=null; sessionStartMs=null;
+/* ======== Reset solo en la APP (baseline) ======== */
+function resetSessionLocal() {
+  // baseline = último valor bruto recibido del ESP32
+  baselineReps = (lastRepValue ?? 0);
+  sessionReps = 0;
+  lastRepTs = null;
+  bestCadRPM = 0;
+  clearTimer();
   ui.reps.textContent='0'; ui.fsNum.textContent='0';
-  ui.timer.textContent='00:00'; ui.avgCad.textContent='0.00 rpm';
   ui.instCad.textContent='—'; ui.bestCad.textContent='—'; ui.lastInt.textContent='—';
-  ui.notes.textContent='Sesión reiniciada.';
-  // además: reset en la placa si estamos conectados
-  sendResetToBoard();
+  ui.notes.textContent='Sesión reiniciada (reset local).';
 }
-ui.btnReset.addEventListener('click', resetSession);
+ui.btnReset.addEventListener('click', resetSessionLocal);
 
-// Fullscreen
-ui.reps.addEventListener('click',async()=>{ui.fs.classList.add('active');try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();}catch(e){}});
-async function exitFullScreen(){ui.fs.classList.remove('active');try{if(document.fullscreenElement)await document.exitFullscreen();}catch(e){}}
-window.exitFullScreen=exitFullScreen;
+/* ======== Fullscreen ======== */
+ui.reps.addEventListener('click', async ()=>{ ui.fs.classList.add('active'); try{ if(!document.fullscreenElement) await document.documentElement.requestFullscreen(); }catch{} });
+async function exitFullScreen(){ ui.fs.classList.remove('active'); try{ if(document.fullscreenElement) await document.exitFullscreen(); }catch{} }
+window.exitFullScreen = exitFullScreen;
 
-// WakeLock
-let wakeLock=null;async function requestWakeLock(){try{if('wakeLock'in navigator){wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>console.log('WakeLock release'));}}catch(e){console.warn('WakeLock:',e.message);}}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&!wakeLock)requestWakeLock();});requestWakeLock();
+/* ======== Wake Lock ======== */
+let wakeLock=null; async function requestWakeLock(){ try{ if('wakeLock' in navigator){ wakeLock=await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release',()=>console.log('WakeLock release')); } }catch(e){ console.warn('WakeLock:', e.message); } }
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !wakeLock) requestWakeLock(); });
+requestWakeLock();
 
-// Datos
+/* ======== Manejo de datos ======== */
 function onRepsValue(dv){
-  const repsVal=dv.getUint32(0,true);
-  if(repsVal>lastRepValue){
-    const inc=repsVal-lastRepValue;sessionReps+=inc;
-    ui.reps.textContent=String(sessionReps);ui.fsNum.textContent=String(sessionReps);
-    if(ui.vibrate.checked&&navigator.vibrate)navigator.vibrate(15);
-    startTimerIfNeeded();
-    const now=Date.now();if(lastRepTs){const dt=now-lastRepTs,rpm=60000/dt;ui.lastInt.textContent=`${(dt/1000).toFixed(2)} s`;ui.instCad.textContent=`${rpm.toFixed(2)} rpm`;if(rpm>bestCadRPM){bestCadRPM=rpm;ui.bestCad.textContent=`${bestCadRPM.toFixed(2)} rpm`;}}lastRepTs=now;
+  const raw = dv.getUint32(0,true);  // contador global del ESP32
+  if (awaitingFirstValue) {
+    // Al conectar tras refrescar: fijamos baseline = valor actual del ESP32
+    baselineReps = raw;
+    lastRepValue = raw;
+    sessionReps = 0;
+    awaitingFirstValue = false;
+    clearTimer();
+    ui.reps.textContent='0'; ui.fsNum.textContent='0';
+    ui.instCad.textContent='—'; ui.bestCad.textContent='—'; ui.lastInt.textContent='—';
+    ui.notes.textContent='Conectado. Sesión lista para empezar.';
+    return; // próximo paquete ya contará normal
   }
-  lastRepValue=repsVal;
+
+  // Delta para cadencia (solo si avanzó)
+  if (lastRepValue!==null && raw>lastRepValue){
+    const now=Date.now();
+    if (lastRepTs){ const dt=now-lastRepTs; const rpm=60000/dt; ui.lastInt.textContent=`${(dt/1000).toFixed(2)} s`; ui.instCad.textContent=`${rpm.toFixed(2)} rpm`; if(rpm>bestCadRPM){ bestCadRPM=rpm; ui.bestCad.textContent=`${bestCadRPM.toFixed(2)} rpm`; } }
+    lastRepTs=now;
+    startTimerIfNeeded();
+  }
+
+  lastRepValue = raw;
+
+  // Reps de la sesión = crudo - baseline
+  const s = Math.max(0, (baselineReps==null? raw : raw - baselineReps));
+  sessionReps = s;
+  ui.reps.textContent = String(s);
+  ui.fsNum.textContent = String(s);
 }
 
-// Reconexión
-async function afterConnected(){
-  svc=await server.getPrimaryService(SERVICE);
-  chReps=await svc.getCharacteristic(REPS);
-  chCtrl=await svc.getCharacteristic(CTRL).catch(()=>null); // por si usas un firmware viejo
-  chReps.addEventListener('characteristicvaluechanged',e=>onRepsValue(e.target.value));
+/* ======== Conexión / Reconexión ======== */
+async function afterConnected(isReconnect){
+  svc = await server.getPrimaryService(SERVICE);
+  chReps = await svc.getCharacteristic(REPS);
+  chReps.addEventListener('characteristicvaluechanged', e => onRepsValue(e.target.value));
   await chReps.startNotifications();
-  setStatus('Conectado',true);
-  ui.notes.textContent='La 1ª repetición inicia el cronómetro.';
+  setStatus('Conectado', true);
+  ui.notes.textContent = 'La 1ª repetición inicia el cronómetro.';
   requestWakeLock();
-  device.addEventListener('gattserverdisconnected',async()=>{
-    setStatus('Desconectado (reintentando...)',false);
+
+  // Si es una reconexión en la misma pestaña, conservamos baseline.
+  // Si venimos de un refresh (baselineReps === null), la primera notificación fijará baseline.
+  awaitingFirstValue = (baselineReps === null);
+
+  device.addEventListener('gattserverdisconnected', async ()=>{
+    setStatus('Desconectado (reintentando...)', false);
     for(let i=0;i<5;i++){
-      try{await new Promise(r=>setTimeout(r,800*(i+1)));if(!device.gatt.connected){server=await device.gatt.connect();await afterConnected();return;}}catch(e){console.warn('reintento',i+1,e.message);}
+      try{ await new Promise(r=>setTimeout(r, 800*(i+1))); if(!device.gatt.connected){ server = await device.gatt.connect(); await afterConnected(true); return; } }catch(e){ console.warn('reintento',i+1,e.message); }
     }
-    setStatus('Desconectado',false);
+    setStatus('Desconectado', false);
   });
 }
 
 async function connectToKnownDevice(){
   if(device && device.gatt && !device.gatt.connected){
-    setStatus('Reconectando...',false);
-    server=await device.gatt.connect();
-    await afterConnected();
+    setStatus('Reconectando...', false);
+    server = await device.gatt.connect();
+    await afterConnected(true);
     return true;
   }
   return false;
@@ -166,26 +195,31 @@ async function connectToKnownDevice(){
 
 async function connectBLE(){
   try{
-    if(await connectToKnownDevice())return;
-    setStatus('Buscando...',false);
+    if(await connectToKnownDevice()) return;
+
+    setStatus('Buscando...', false);
     let dev;
     try{
-      dev=await navigator.bluetooth.requestDevice({
-        filters:[{services:[SERVICE]},{name:'ESP32-Pulsos'},{namePrefix:'ESP32'}],
-        optionalServices:[SERVICE]
+      dev = await navigator.bluetooth.requestDevice({
+        filters: [{ services:[SERVICE] }, { name:'ESP32-Pulsos' }, { namePrefix:'ESP32' }],
+        optionalServices: [SERVICE]
       });
     }catch(e){
       if(e.name==='NotFoundError'){
-        dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
-      }else{throw e;}
+        dev = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices:[SERVICE] });
+      } else throw e;
     }
-    device=dev; server=await device.gatt.connect();
-    await afterConnected();
-  }catch(err){console.error(err);setStatus('Error de conexión',false);alert('No pude conectar: '+err.message);}
+    device = dev; server = await device.gatt.connect();
+    await afterConnected(false);
+  }catch(err){
+    console.error(err);
+    setStatus('Error de conexión', false);
+    alert('No pude conectar: ' + err.message);
+  }
 }
-ui.btnConnect.addEventListener('click',connectBLE);
+ui.btnConnect.addEventListener('click', connectBLE);
 
 // Cierre/refresh: desconexión limpia
-window.addEventListener('beforeunload',()=>{try{if(device?.gatt?.connected)device.gatt.disconnect();}catch{}});
+window.addEventListener('beforeunload', ()=>{ try{ if(device?.gatt?.connected) device.gatt.disconnect(); }catch{} });
 </script>
 </html>
