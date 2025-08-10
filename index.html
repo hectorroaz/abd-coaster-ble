@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8" />
+<title>ABD Coaster – Contador BLE</title>
+<style>
+body{font-family:system-ui;margin:2rem;max-width:650px}
+button{padding:.6rem 1rem;font-size:1rem;margin-right:.5rem}
+.card{padding:1rem;border:1px solid #ddd;border-radius:10px;margin-top:1rem}
+.big{font-size:2rem;font-weight:700}
+.small{opacity:.7}
+</style>
+
+<h1>ABD Coaster – BLE</h1>
+<button id="btn">Conectar</button>
+
+<div class="card"><div class="small">Repeticiones</div><div class="big" id="reps">–</div></div>
+<div class="card"><div class="small">Pulsos</div><div class="big" id="pulses">–</div></div>
+<div class="card"><div class="small">Frecuencia (Hz)</div><div class="big" id="hz">–</div></div>
+
+<script>
+const SERVICE = '7b1e0001-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const REPS    = '7b1e0004-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const PULSES  = '7b1e0002-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const HZ      = '7b1e0003-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const $ = s => document.querySelector(s);
+
+async function connectBLE(){
+  const device = await navigator.bluetooth.requestDevice({
+    filters: [{ namePrefix: 'ESP32-' }],
+    optionalServices: [SERVICE]
+  });
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SERVICE);
+
+  const chReps   = await svc.getCharacteristic(REPS);
+  const chPulses = await svc.getCharacteristic(PULSES);
+  const chHz     = await svc.getCharacteristic(HZ);
+
+  chReps.addEventListener('characteristicvaluechanged', e => {
+    $('#reps').textContent = e.target.value.getUint32(0, true);
+  });
+  chPulses.addEventListener('characteristicvaluechanged', e => {
+    $('#pulses').textContent = e.target.value.getUint32(0, true);
+  });
+  chHz.addEventListener('characteristicvaluechanged', e => {
+    $('#hz').textContent = e.target.value.getFloat32(0, true).toFixed(2);
+  });
+
+  await chReps.startNotifications();
+  await chPulses.startNotifications();
+  await chHz.startNotifications();
+}
+
+document.getElementById('btn').addEventListener('click', async () => {
+  try {
+    if (!navigator.bluetooth) { alert('Tu navegador no soporta Web Bluetooth'); return; }
+    await connectBLE();
+  } catch (err) { alert('Error: ' + err); console.error(err); }
+});
+</script>
+</html>
