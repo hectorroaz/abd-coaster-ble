@@ -6,7 +6,7 @@
 <style>
   :root{--bg:#0b0b0d;--panel:#131317;--muted:#8b8b98;--accent:#5eead4;--text:#e6e6f0;--danger:#ef4444;--ok:#10b981}
   html,body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-  .wrap{max-width:880px;margin:0 auto;padding:18px}
+  .wrap{max-width:960px;margin:0 auto;padding:18px}
   header{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between}
   .btn{appearance:none;border:1px solid #2a2a33;background:#1a1a22;color:var(--text);padding:.7rem 1rem;border-radius:12px;cursor:pointer;font-weight:600}
   .btn:hover{border-color:#3b3b46}.btn.primary{background:#1a2a29;border-color:#274c45;color:var(--accent)}
@@ -15,18 +15,23 @@
   .card{grid-column:span 12;background:var(--panel);border:1px solid #20202a;border-radius:18px;padding:16px}
   @media(min-width:720px){.card.span6{grid-column:span 6}.card.span4{grid-column:span 4}.card.span8{grid-column:span 8}}
   .label{font-size:.9rem;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
-  .big{font-size:5rem;line-height:1;font-weight:800;margin:.25em 0;cursor:pointer}
+  .big{font-size:5.5rem;line-height:1;font-weight:800;margin:.25em 0;cursor:pointer;user-select:none}
   .timer{font-variant-numeric:tabular-nums;font-size:2rem}
   .stat{font-variant-numeric:tabular-nums;font-size:1.6rem;font-weight:700}
   .muted{color:var(--muted)} .pill{display:inline-block;padding:.25rem .6rem;border-radius:999px;border:1px solid #2a2a33;color:var(--muted);font-size:.85rem}
   footer{margin:22px 0;color:var(--muted);font-size:.9rem}
   .toggle{display:inline-flex;align-items:center;gap:.5rem}.toggle input{width:18px;height:18px}
 
+  .ctrls{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin:.4rem 0 1rem}
+  .select,.num{background:#1a1a22;border:1px solid #2a2a33;color:var(--text);border-radius:10px;padding:.55rem .7rem;font-weight:600}
+  .num{width:8.5rem}
+  .mini{padding:.55rem .9rem;border-radius:10px}
+
   /* Pantalla completa */
   .fullscreen{position:fixed;inset:0;background:#000;display:none;align-items:center;justify-content:center}
   .fullscreen.active{display:flex}
-  .fsNum{color:#fff;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;text-align:center;font-size:22vw}
-  .fsHint{position:fixed;bottom:14px;left:0;right:0;text-align:center;color:#aaa;font-size:.95rem}
+  .fsNum{color:#fff;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;text-align:center;white-space:nowrap}
+  .fsHint{position:fixed;bottom:14px;left:0;right:0;text-align:center;color:#aaa;font-size:1rem}
 </style>
 
 <div class="wrap">
@@ -38,6 +43,24 @@
     </div>
     <span id="status" class="pill">Desconectado</span>
   </header>
+
+  <!-- Controles nuevos -->
+  <div class="card">
+    <div class="label">Opciones de sesión</div>
+    <div class="ctrls">
+      <label>Tras refrescar:
+        <select id="modeSelect" class="select">
+          <option value="follow">Seguir contador del ESP32</option>
+          <option value="zero">Empezar en 0</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem">
+        Establecer contador:
+        <input id="setNum" class="num" type="number" min="0" step="1" value="0">
+        <button id="btnSetNum" class="btn mini">Aplicar</button>
+      </label>
+    </div>
+  </div>
 
   <div class="row">
     <section class="card span8">
@@ -81,21 +104,52 @@ const REPS   ='7b1e0004-8b6b-4b6d-b6b3-6f6b7b1e0001';
 
 /* ======== UI ======== */
 const $=s=>document.querySelector(s);
-const ui={btnConnect:$('#btnConnect'),btnReset:$('#btnReset'),vibrate:$('#vibrate'),
+const ui={
+  btnConnect:$('#btnConnect'),btnReset:$('#btnReset'),vibrate:$('#vibrate'),
   status:$('#status'),reps:$('#reps'),timer:$('#timer'),avgCad:$('#avgCad'),
   instCad:$('#instCad'),bestCad:$('#bestCad'),lastInt:$('#lastInt'),notes:$('#notes'),
-  fs:$('#fs'),fsNum:$('#fsNum')};
+  fs:$('#fs'),fsNum:$('#fsNum'),
+  mode:$('#modeSelect'), setNum:$('#setNum'), btnSetNum:$('#btnSetNum')
+};
 
 /* ======== Estado sesión (lado cliente) ======== */
 let device,server,svc,chReps;
-let lastRepValue=null;     // último valor bruto que llegó del ESP32
-let baselineReps=null;     // reps del ESP32 cuando empezó la sesión
+let lastRepValue=null;
+let baselineReps=null;     // base que restamos al valor crudo de la placa
 let sessionReps=0;
-let sessionStartMs=null;
-let timerId=null;
-let lastRepTs=null;
-let bestCadRPM=0;
-let awaitingFirstValue=false; // para fijar baseline al conectar/refrescar
+let sessionStartMs=null,timerId=null,lastRepTs=null,bestCadRPM=0;
+let awaitingFirstValue=false;
+
+/* ======== Preferencias ======== */
+const LS_MODE='abd_mode';
+const LS_BASELINE='abd_baseline';
+
+function loadPrefs(){
+  const m = localStorage.getItem(LS_MODE) || 'zero';
+  ui.mode.value = m;
+  if(m==='follow'){
+    const b = Number(localStorage.getItem(LS_BASELINE));
+    baselineReps = Number.isFinite(b) ? b : 0;
+  } else {
+    baselineReps = null; // se fijará con el primer valor tras conectar
+  }
+}
+function savePrefs(){
+  localStorage.setItem(LS_MODE, ui.mode.value);
+  if(ui.mode.value==='follow' && baselineReps!=null){
+    localStorage.setItem(LS_BASELINE, String(baselineReps));
+  }else{
+    localStorage.removeItem(LS_BASELINE);
+  }
+}
+ui.mode.addEventListener('change', ()=>{
+  loadPrefs(); // re-aplica baseline segun modo
+  // feedback visual
+  ui.notes.textContent = ui.mode.value==='follow'
+    ? 'Modo: seguir contador del ESP32 (se conserva entre recargas).'
+    : 'Modo: empezar en 0 al conectar tras una recarga.';
+  savePrefs();
+});
 
 /* ======== Util ======== */
 function fmtTime(ms){if(ms==null)return'00:00';const s=Math.floor(ms/1000);return`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;}
@@ -103,9 +157,8 @@ function setStatus(t,ok=false){ui.status.textContent=t;ui.status.style.color=ok?
 function startTimerIfNeeded(){ if(sessionStartMs!==null) return; sessionStartMs=Date.now(); timerId=setInterval(()=>{ const el=Date.now()-sessionStartMs; ui.timer.textContent=fmtTime(el); const m=el/60000; ui.avgCad.textContent=`${m>0?(sessionReps/m).toFixed(2):'0.00'} rpm`; },1000); }
 function clearTimer(){ if(timerId) clearInterval(timerId); timerId=null; sessionStartMs=null; ui.timer.textContent='00:00'; ui.avgCad.textContent='0.00 rpm'; }
 
-/* ======== Reset solo en la APP (baseline) ======== */
+/* ======== Reset local ======== */
 function resetSessionLocal() {
-  // baseline = último valor bruto recibido del ESP32
   baselineReps = (lastRepValue ?? 0);
   sessionReps = 0;
   lastRepTs = null;
@@ -113,51 +166,76 @@ function resetSessionLocal() {
   clearTimer();
   ui.reps.textContent='0'; ui.fsNum.textContent='0';
   ui.instCad.textContent='—'; ui.bestCad.textContent='—'; ui.lastInt.textContent='—';
-  ui.notes.textContent='Sesión reiniciada (reset local).';
+  ui.notes.textContent='Sesión reiniciada.';
+  if(ui.mode.value==='follow') savePrefs();
 }
 ui.btnReset.addEventListener('click', resetSessionLocal);
 
-/* ======== Fullscreen ======== */
-ui.reps.addEventListener('click', async ()=>{ ui.fs.classList.add('active'); try{ if(!document.fullscreenElement) await document.documentElement.requestFullscreen(); }catch{} });
+/* ======== Establecer número manual ======== */
+ui.btnSetNum.addEventListener('click', ()=>{
+  const desired = Math.max(0, parseInt(ui.setNum.value||'0',10));
+  const raw = lastRepValue ?? 0;
+  baselineReps = Math.max(0, raw - desired);
+  sessionReps = desired;
+  ui.reps.textContent = String(desired);
+  ui.fsNum.textContent = String(desired);
+  if(ui.mode.value==='follow') savePrefs();
+  ui.notes.textContent = `Contador fijado a ${desired}.`;
+  fitFs(); // por si cambia dígitos
+});
+
+/* ======== Fullscreen con auto-tamaño agresivo ======== */
+function fitFs(){
+  // tamaño en vmin inversamente proporcional a los dígitos, con límites
+  const digits = Math.max(1, ui.fsNum.textContent.length);
+  const size = Math.max(18, Math.min(90, Math.floor(110 / digits))); // 1 dígito ≈90vmin, 2->55, 3->36...
+  ui.fsNum.style.fontSize = size + 'vmin';
+}
+ui.reps.addEventListener('click', async ()=>{
+  ui.fs.classList.add('active');
+  ui.fsNum.textContent = ui.reps.textContent;
+  fitFs();
+  try{ if(!document.fullscreenElement) await document.documentElement.requestFullscreen(); }catch{}
+});
 async function exitFullScreen(){ ui.fs.classList.remove('active'); try{ if(document.fullscreenElement) await document.exitFullscreen(); }catch{} }
 window.exitFullScreen = exitFullScreen;
+window.addEventListener('resize', fitFs);
 
 /* ======== Wake Lock ======== */
 let wakeLock=null; async function requestWakeLock(){ try{ if('wakeLock' in navigator){ wakeLock=await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release',()=>console.log('WakeLock release')); } }catch(e){ console.warn('WakeLock:', e.message); } }
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !wakeLock) requestWakeLock(); });
 requestWakeLock();
 
-/* ======== Manejo de datos ======== */
+/* ======== Datos ======== */
 function onRepsValue(dv){
-  const raw = dv.getUint32(0,true);  // contador global del ESP32
-  if (awaitingFirstValue) {
-    // Al conectar tras refrescar: fijamos baseline = valor actual del ESP32
-    baselineReps = raw;
-    lastRepValue = raw;
-    sessionReps = 0;
+  const raw = dv.getUint32(0,true);
+  if (awaitingFirstValue){
+    if(ui.mode.value==='zero'){ // baseline = valor actual para empezar en 0
+      baselineReps = raw;
+    }
     awaitingFirstValue = false;
-    clearTimer();
+    lastRepValue = raw;
     ui.reps.textContent='0'; ui.fsNum.textContent='0';
     ui.instCad.textContent='—'; ui.bestCad.textContent='—'; ui.lastInt.textContent='—';
     ui.notes.textContent='Conectado. Sesión lista para empezar.';
-    return; // próximo paquete ya contará normal
+    if(ui.mode.value==='follow') savePrefs(); // conservar baseline entre recargas
+    return;
   }
 
-  // Delta para cadencia (solo si avanzó)
+  // Cadencia
   if (lastRepValue!==null && raw>lastRepValue){
     const now=Date.now();
     if (lastRepTs){ const dt=now-lastRepTs; const rpm=60000/dt; ui.lastInt.textContent=`${(dt/1000).toFixed(2)} s`; ui.instCad.textContent=`${rpm.toFixed(2)} rpm`; if(rpm>bestCadRPM){ bestCadRPM=rpm; ui.bestCad.textContent=`${bestCadRPM.toFixed(2)} rpm`; } }
     lastRepTs=now;
     startTimerIfNeeded();
   }
-
   lastRepValue = raw;
 
-  // Reps de la sesión = crudo - baseline
-  const s = Math.max(0, (baselineReps==null? raw : raw - baselineReps));
-  sessionReps = s;
-  ui.reps.textContent = String(s);
-  ui.fsNum.textContent = String(s);
+  // Mostrar reps = crudo - baseline
+  const base = baselineReps ?? 0;
+  sessionReps = Math.max(0, raw - base);
+  ui.reps.textContent = String(sessionReps);
+  if(ui.fs.classList.contains('active')){ ui.fsNum.textContent = ui.reps.textContent; fitFs(); }
 }
 
 /* ======== Conexión / Reconexión ======== */
@@ -170,9 +248,15 @@ async function afterConnected(isReconnect){
   ui.notes.textContent = 'La 1ª repetición inicia el cronómetro.';
   requestWakeLock();
 
-  // Si es una reconexión en la misma pestaña, conservamos baseline.
-  // Si venimos de un refresh (baselineReps === null), la primera notificación fijará baseline.
-  awaitingFirstValue = (baselineReps === null);
+  // Modo tras refrescar
+  if(isReconnect){
+    // conservar baseline en reconexión de la misma pestaña
+    awaitingFirstValue = false;
+  }else{
+    // nueva conexión tras recargar: seguir/zero según preferencia
+    loadPrefs();
+    awaitingFirstValue = (ui.mode.value==='zero');
+  }
 
   device.addEventListener('gattserverdisconnected', async ()=>{
     setStatus('Desconectado (reintentando...)', false);
@@ -221,5 +305,8 @@ ui.btnConnect.addEventListener('click', connectBLE);
 
 // Cierre/refresh: desconexión limpia
 window.addEventListener('beforeunload', ()=>{ try{ if(device?.gatt?.connected) device.gatt.disconnect(); }catch{} });
+
+// Cargar preferencias al iniciar
+loadPrefs();
 </script>
 </html>
