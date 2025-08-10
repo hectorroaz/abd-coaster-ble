@@ -9,8 +9,7 @@
   .wrap{max-width:880px;margin:0 auto;padding:18px}
   header{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between}
   .btn{appearance:none;border:1px solid #2a2a33;background:#1a1a22;color:var(--text);padding:.7rem 1rem;border-radius:12px;cursor:pointer;font-weight:600}
-  .btn:hover{border-color:#3b3b46}
-  .btn.primary{background:#1a2a29;border-color:#274c45;color:var(--accent)}
+  .btn:hover{border-color:#3b3b46}.btn.primary{background:#1a2a29;border-color:#274c45;color:var(--accent)}
   .btn.danger{border-color:#3a1618;background:#1f0e10;color:var(--danger)}
   .row{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;margin-top:16px}
   .card{grid-column:span 12;background:var(--panel);border:1px solid #20202a;border-radius:18px;padding:16px}
@@ -19,13 +18,9 @@
   .big{font-size:5rem;line-height:1;font-weight:800;margin:.25em 0;cursor:pointer}
   .timer{font-variant-numeric:tabular-nums;font-size:2rem}
   .stat{font-variant-numeric:tabular-nums;font-size:1.6rem;font-weight:700}
-  .muted{color:var(--muted)}
-  .pill{display:inline-block;padding:.25rem .6rem;border-radius:999px;border:1px solid #2a2a33;color:var(--muted);font-size:.85rem}
+  .muted{color:var(--muted)} .pill{display:inline-block;padding:.25rem .6rem;border-radius:999px;border:1px solid #2a2a33;color:var(--muted);font-size:.85rem}
   footer{margin:22px 0;color:var(--muted);font-size:.9rem}
-  .toggle{display:inline-flex;align-items:center;gap:.5rem}
-  .toggle input{width:18px;height:18px}
-
-  /* Pantalla completa (overlay) */
+  .toggle{display:inline-flex;align-items:center;gap:.5rem}.toggle input{width:18px;height:18px}
   .fullscreen{position:fixed;inset:0;background:#000;display:none;align-items:center;justify-content:center}
   .fullscreen.active{display:flex}
   .fsNum{color:#fff;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;text-align:center;font-size:22vw}
@@ -44,19 +39,16 @@
 
   <div class="row">
     <section class="card span8">
-      <div class="label">Repeticiones (toca para ver en pantalla completa)</div>
+      <div class="label">Repeticiones (toca para pantalla completa)</div>
       <div id="reps" class="big">0</div>
       <div class="label">Cronómetro (desde la 1ª rep)</div>
       <div id="timer" class="timer">00:00</div>
     </section>
 
     <section class="card span4">
-      <div class="label">Cadencia media</div>
-      <div id="avgCad" class="stat">0.00 rpm</div>
-      <div class="label" style="margin-top:8px">Cadencia instantánea</div>
-      <div id="instCad" class="stat">—</div>
-      <div class="label" style="margin-top:8px">Mejor cadencia</div>
-      <div id="bestCad" class="stat">—</div>
+      <div class="label">Cadencia media</div><div id="avgCad" class="stat">0.00 rpm</div>
+      <div class="label" style="margin-top:8px">Cadencia instantánea</div><div id="instCad" class="stat">—</div>
+      <div class="label" style="margin-top:8px">Mejor cadencia</div><div id="bestCad" class="stat">—</div>
     </section>
 
     <section class="card span6">
@@ -67,163 +59,109 @@
 
     <section class="card span6">
       <div class="label">Notas de sesión</div>
-      <div id="notes" class="muted">Conecta el dispositivo y empieza a moverte; el cronómetro arranca con la primera repetición.</div>
+      <div id="notes" class="muted">Conecta el dispositivo; el cronómetro arranca con la primera repetición.</div>
     </section>
   </div>
 
   <footer><span class="muted">HR Creativos · ESP32 + Web Bluetooth · Tema oscuro</span></footer>
 </div>
 
-<!-- Overlay pantalla completa -->
+<!-- Pantalla completa -->
 <div id="fs" class="fullscreen" onclick="exitFullScreen()">
   <div class="fsNum" id="fsNum">0</div>
   <div class="fsHint">Toca para salir</div>
 </div>
 
 <script>
-/* ======== BLE UUIDs ======== */
-const SERVICE = '7b1e0001-8b6b-4b6d-b6b3-6f6b7b1e0001';
-const REPS    = '7b1e0004-8b6b-4b6d-b6b3-6f6b7b1e0001'; // uint32 (reps)
+const SERVICE='7b1e0001-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const REPS   ='7b1e0004-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const $=s=>document.querySelector(s);
+const ui={btnConnect:$('#btnConnect'),btnReset:$('#btnReset'),vibrate:$('#vibrate'),
+  status:$('#status'),reps:$('#reps'),timer:$('#timer'),avgCad:$('#avgCad'),
+  instCad:$('#instCad'),bestCad:$('#bestCad'),lastInt:$('#lastInt'),notes:$('#notes'),
+  fs:$('#fs'),fsNum:$('#fsNum')};
 
-/* ======== UI refs ======== */
-const $ = s => document.querySelector(s);
-const ui = {
-  btnConnect: $('#btnConnect'),
-  btnReset:   $('#btnReset'),
-  vibrate:    $('#vibrate'),
-  status:     $('#status'),
-  reps:       $('#reps'),
-  timer:      $('#timer'),
-  avgCad:     $('#avgCad'),
-  instCad:    $('#instCad'),
-  bestCad:    $('#bestCad'),
-  lastInt:    $('#lastInt'),
-  notes:      $('#notes'),
-  fs:         $('#fs'),
-  fsNum:      $('#fsNum'),
-};
+let device,server,svc,chReps;
+let lastRepValue=0,sessionReps=0,sessionStartMs=null,timerId=null,lastRepTs=null,bestCadRPM=0;
 
-/* ======== Estado ======== */
-let device, server, svc, chReps;
-let lastRepValue = 0;
-let sessionReps = 0;
-let sessionStartMs = null;
-let timerId = null;
-let lastRepTs = null;
-let bestCadRPM = 0;
+function fmtTime(ms){if(ms==null)return'00:00';const s=Math.floor(ms/1000);return`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;}
+function setStatus(t,ok=false){ui.status.textContent=t;ui.status.style.color=ok?'var(--ok)':'var(--muted)';}
+function startTimerIfNeeded(){if(sessionStartMs!==null)return;sessionStartMs=Date.now();timerId=setInterval(()=>{const el=Date.now()-sessionStartMs;ui.timer.textContent=fmtTime(el);const m=el/60000;ui.avgCad.textContent=`${m>0?(sessionReps/m).toFixed(2):'0.00'} rpm`;},1000);}
+function resetSession(){sessionReps=0;lastRepValue=0;lastRepTs=null;bestCadRPM=0;if(timerId)clearInterval(timerId),timerId=null;sessionStartMs=null;ui.reps.textContent='0';ui.fsNum.textContent='0';ui.timer.textContent='00:00';ui.avgCad.textContent='0.00 rpm';ui.instCad.textContent='—';ui.bestCad.textContent='—';ui.lastInt.textContent='—';ui.notes.textContent='Sesión reiniciada.';}
+ui.btnReset.addEventListener('click',resetSession);
 
-/* ======== Util ======== */
-function fmtTime(ms){ if (ms==null) return '00:00'; const s=Math.floor(ms/1000); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; }
-function setStatus(txt, ok=false){ ui.status.textContent=txt; ui.status.style.color = ok ? 'var(--ok)' : 'var(--muted)'; }
+// Fullscreen
+ui.reps.addEventListener('click',async()=>{ui.fs.classList.add('active');try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();}catch(e){}});
+async function exitFullScreen(){ui.fs.classList.remove('active');try{if(document.fullscreenElement)await document.exitFullscreen();}catch(e){}}
+window.exitFullScreen=exitFullScreen;
 
-/* ======== Wake Lock robusto ======== */
-let wakeLock=null;
-async function requestWakeLock(){ try{ if('wakeLock' in navigator){ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release',()=>console.log('WakeLock liberado')); } }catch(e){ console.warn('WakeLock no disponible:', e.message); } }
-document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='visible' && wakeLock==null) requestWakeLock(); });
-requestWakeLock();
+// WakeLock
+let wakeLock=null;async function requestWakeLock(){try{if('wakeLock'in navigator){wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>console.log('WakeLock release'));}}catch(e){console.warn('WakeLock:',e.message);}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&!wakeLock)requestWakeLock();});requestWakeLock();
 
-/* ======== Timer Sesión ======== */
-function startTimerIfNeeded(){
-  if (sessionStartMs!==null) return;
-  sessionStartMs = Date.now();
-  timerId = setInterval(()=>{
-    const elapsed = Date.now()-sessionStartMs;
-    ui.timer.textContent = fmtTime(elapsed);
-    const min = elapsed/60000;
-    ui.avgCad.textContent = `${min>0 ? (sessionReps/min).toFixed(2) : '0.00'} rpm`;
-  },1000);
-}
-function resetSession(){
-  sessionReps=0; lastRepValue=0; lastRepTs=null; bestCadRPM=0;
-  if (timerId) clearInterval(timerId); timerId=null; sessionStartMs=null;
-  ui.reps.textContent='0'; ui.fsNum.textContent='0';
-  ui.timer.textContent='00:00'; ui.avgCad.textContent='0.00 rpm';
-  ui.instCad.textContent='—'; ui.bestCad.textContent='—'; ui.lastInt.textContent='—';
-  ui.notes.textContent='Sesión reiniciada.';
-}
-ui.btnReset.addEventListener('click', resetSession);
-
-/* ======== Pantalla completa ======== */
-ui.reps.addEventListener('click', async ()=>{
-  ui.fs.classList.add('active');
-  // intenta fullscreen del navegador
-  try{ if(document.fullscreenElement==null){ await document.documentElement.requestFullscreen(); } }catch(e){}
-});
-async function exitFullScreen(){
-  ui.fs.classList.remove('active');
-  try{ if(document.fullscreenElement){ await document.exitFullscreen(); } }catch(e){}
-}
-window.exitFullScreen = exitFullScreen;
-
-/* ======== Lógica de datos ======== */
+// Datos
 function onRepsValue(dv){
-  const repsVal = dv.getUint32(0,true);
-  if (repsVal>lastRepValue){
-    const inc = repsVal - lastRepValue;
-    sessionReps += inc;
-    ui.reps.textContent = sessionReps.toString();
-    ui.fsNum.textContent = sessionReps.toString();
-
-    if (ui.vibrate.checked && navigator.vibrate) navigator.vibrate(15);
+  const repsVal=dv.getUint32(0,true);
+  if(repsVal>lastRepValue){
+    const inc=repsVal-lastRepValue;sessionReps+=inc;
+    ui.reps.textContent=String(sessionReps);ui.fsNum.textContent=String(sessionReps);
+    if(ui.vibrate.checked&&navigator.vibrate)navigator.vibrate(15);
     startTimerIfNeeded();
-
-    const now = Date.now();
-    if (lastRepTs!==null){
-      const dt = now - lastRepTs;
-      const rpm = 60000/dt;
-      ui.lastInt.textContent = `${(dt/1000).toFixed(2)} s`;
-      ui.instCad.textContent = `${rpm.toFixed(2)} rpm`;
-      if (rpm>bestCadRPM){ bestCadRPM=rpm; ui.bestCad.textContent=`${bestCadRPM.toFixed(2)} rpm`; }
-    }
-    lastRepTs = now;
-    ui.notes.textContent = `¡Vamos! Reps en esta sesión: ${sessionReps}`;
+    const now=Date.now();if(lastRepTs){const dt=now-lastRepTs,rpm=60000/dt;ui.lastInt.textContent=`${(dt/1000).toFixed(2)} s`;ui.instCad.textContent=`${rpm.toFixed(2)} rpm`;if(rpm>bestCadRPM){bestCadRPM=rpm;ui.bestCad.textContent=`${bestCadRPM.toFixed(2)} rpm`;}}lastRepTs=now;
   }
-  lastRepValue = repsVal;
+  lastRepValue=repsVal;
 }
 
-/* ======== Conexión BLE – filtros flexibles ======== */
+// Reconexión
+async function afterConnected(){
+  svc=await server.getPrimaryService(SERVICE);
+  chReps=await svc.getCharacteristic(REPS);
+  chReps.addEventListener('characteristicvaluechanged',e=>onRepsValue(e.target.value));
+  await chReps.startNotifications();
+  setStatus('Conectado',true);
+  ui.notes.textContent='La 1ª repetición inicia el cronómetro.';
+  requestWakeLock();
+  device.addEventListener('gattserverdisconnected',async()=>{
+    setStatus('Desconectado (reintentando...)',false);
+    for(let i=0;i<5;i++){
+      try{await new Promise(r=>setTimeout(r,800*(i+1)));if(!device.gatt.connected){server=await device.gatt.connect();await afterConnected();return;}}catch(e){console.warn('reintento',i+1,e.message);}
+    }
+    setStatus('Desconectado',false);
+  });
+}
+
+async function connectToKnownDevice(){
+  if(device && device.gatt && !device.gatt.connected){
+    setStatus('Reconectando...',false);
+    server=await device.gatt.connect();
+    await afterConnected();
+    return true;
+  }
+  return false;
+}
+
 async function connectBLE(){
   try{
-    setStatus('Buscando...', false);
-
-    // 1) Preferimos por SERVICIO (si el anuncio incluye el UUID)
-    // 2) O por nombre (si por servicio no aparece)
-    // 3) Plan C: acceptAllDevices
+    if(await connectToKnownDevice())return;
+    setStatus('Buscando...',false);
     let dev;
     try{
-      dev = await navigator.bluetooth.requestDevice({
-        filters: [
-          { services: [SERVICE] },
-          { namePrefix: 'ESP32' },
-          { name: 'ESP32-Pulsos' }
-        ],
-        optionalServices: [SERVICE]
+      dev=await navigator.bluetooth.requestDevice({
+        filters:[{services:[SERVICE]},{name:'ESP32-Pulsos'},{namePrefix:'ESP32'}],
+        optionalServices:[SERVICE]
       });
     }catch(e){
-      if (e.name==='NotFoundError'){
-        dev = await navigator.bluetooth.requestDevice({
-          acceptAllDevices: true,
-          optionalServices: [SERVICE]
-        });
-      }else{ throw e; }
+      if(e.name==='NotFoundError'){
+        dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
+      }else{throw e;}
     }
-
-    device = dev;
-    server = await device.gatt.connect();
-    svc = await server.getPrimaryService(SERVICE);
-    chReps = await svc.getCharacteristic(REPS);
-    chReps.addEventListener('characteristicvaluechanged', e => onRepsValue(e.target.value));
-    await chReps.startNotifications();
-
-    setStatus('Conectado', true);
-    ui.notes.textContent = 'Conectado. La 1ª repetición inicia el cronómetro.';
-    requestWakeLock(); // refuerza mantener pantalla encendida
-  }catch(err){
-    console.error(err);
-    setStatus('Error de conexión', false);
-    alert('No pude conectar: ' + err.message);
-  }
+    device=dev; server=await device.gatt.connect();
+    await afterConnected();
+  }catch(err){console.error(err);setStatus('Error de conexión',false);alert('No pude conectar: '+err.message);}
 }
-ui.btnConnect.addEventListener('click', connectBLE);
+ui.btnConnect.addEventListener('click',connectBLE);
+
+// Cierre/refresh: desconexión limpia
+window.addEventListener('beforeunload',()=>{try{if(device?.gatt?.connected)device.gatt.disconnect();}catch{}});
 </script>
 </html>
