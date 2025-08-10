@@ -75,20 +75,43 @@
 <script>
 const SERVICE='7b1e0001-8b6b-4b6d-b6b3-6f6b7b1e0001';
 const REPS   ='7b1e0004-8b6b-4b6d-b6b3-6f6b7b1e0001';
+const CTRL   ='7b1e0005-8b6b-4b6d-b6b3-6f6b7b1e0001';
+
 const $=s=>document.querySelector(s);
 const ui={btnConnect:$('#btnConnect'),btnReset:$('#btnReset'),vibrate:$('#vibrate'),
   status:$('#status'),reps:$('#reps'),timer:$('#timer'),avgCad:$('#avgCad'),
   instCad:$('#instCad'),bestCad:$('#bestCad'),lastInt:$('#lastInt'),notes:$('#notes'),
   fs:$('#fs'),fsNum:$('#fsNum')};
 
-let device,server,svc,chReps;
+let device,server,svc,chReps,chCtrl;
 let lastRepValue=0,sessionReps=0,sessionStartMs=null,timerId=null,lastRepTs=null,bestCadRPM=0;
 
 function fmtTime(ms){if(ms==null)return'00:00';const s=Math.floor(ms/1000);return`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;}
 function setStatus(t,ok=false){ui.status.textContent=t;ui.status.style.color=ok?'var(--ok)':'var(--muted)';}
 function startTimerIfNeeded(){if(sessionStartMs!==null)return;sessionStartMs=Date.now();timerId=setInterval(()=>{const el=Date.now()-sessionStartMs;ui.timer.textContent=fmtTime(el);const m=el/60000;ui.avgCad.textContent=`${m>0?(sessionReps/m).toFixed(2):'0.00'} rpm`;},1000);}
-function resetSession(){sessionReps=0;lastRepValue=0;lastRepTs=null;bestCadRPM=0;if(timerId)clearInterval(timerId),timerId=null;sessionStartMs=null;ui.reps.textContent='0';ui.fsNum.textContent='0';ui.timer.textContent='00:00';ui.avgCad.textContent='0.00 rpm';ui.instCad.textContent='—';ui.bestCad.textContent='—';ui.lastInt.textContent='—';ui.notes.textContent='Sesión reiniciada.';}
-ui.btnReset.addEventListener('click',resetSession);
+
+async function sendResetToBoard(){
+  if(!chCtrl) return;
+  const data = new Uint8Array([0x01]);
+  try{
+    // intenta con respuesta
+    await chCtrl.writeValue(data);
+  }catch(_){
+    try{ await chCtrl.writeValueWithoutResponse(data); }catch(e){ console.warn('Reset remoto falló:', e.message); }
+  }
+}
+
+function resetSession(){
+  sessionReps=0; lastRepValue=0; lastRepTs=null; bestCadRPM=0;
+  if(timerId) clearInterval(timerId),timerId=null; sessionStartMs=null;
+  ui.reps.textContent='0'; ui.fsNum.textContent='0';
+  ui.timer.textContent='00:00'; ui.avgCad.textContent='0.00 rpm';
+  ui.instCad.textContent='—'; ui.bestCad.textContent='—'; ui.lastInt.textContent='—';
+  ui.notes.textContent='Sesión reiniciada.';
+  // además: reset en la placa si estamos conectados
+  sendResetToBoard();
+}
+ui.btnReset.addEventListener('click', resetSession);
 
 // Fullscreen
 ui.reps.addEventListener('click',async()=>{ui.fs.classList.add('active');try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();}catch(e){}});
@@ -116,6 +139,7 @@ function onRepsValue(dv){
 async function afterConnected(){
   svc=await server.getPrimaryService(SERVICE);
   chReps=await svc.getCharacteristic(REPS);
+  chCtrl=await svc.getCharacteristic(CTRL).catch(()=>null); // por si usas un firmware viejo
   chReps.addEventListener('characteristicvaluechanged',e=>onRepsValue(e.target.value));
   await chReps.startNotifications();
   setStatus('Conectado',true);
